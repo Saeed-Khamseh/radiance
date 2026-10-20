@@ -11,6 +11,7 @@ import (
     "net/http/httptest"
     "net/netip"
     "strconv"
+    "slices"
     "strings"
     "testing"
     "time"
@@ -53,6 +54,7 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
     dir := t.TempDir()
     st, err := NewSplitTunnelHandler(dir, rlog.NoOpLogger())
     require.NoError(t, err)
+    require.NoError(t, st.AddItem(TypeDomain, "cidr-domain-bypass.test"))
     require.NoError(t, st.AddItem(TypeIPCIDR, "127.0.0.0/8"))
     require.NoError(t, st.SetEnabled(true))
 
@@ -61,6 +63,7 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
         "log": {"disabled": true},
         "dns": {
             "servers": [
+                {"type":"hosts","tag":"dns_bypass","predefined":{"cidr-domain-bypass.test":["127.0.0.1"]}},
                 {"type":"hosts","tag":"%s","predefined":{"cidr-route.test":["127.0.0.1"]}},
                 {"type":"fakeip","tag":"dns_fakeip","inet4_range":"198.18.0.0/15"}
             ],
@@ -71,13 +74,15 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
         "outbounds":[{"type":"direct","tag":"direct"}]
     }`, resolver, resolver, proxyPort)))
     require.NoError(t, err)
-    rules := append(cidrResolveRoutingRules(), splitTunnelRoutingRules()...)
+    rules := append(splitTunnelRoutingRules(), cidrResolveRoutingRules()...)
+    rules = append(rules, splitTunnelRoutingRules()...)
     opts.Route = &O.RouteOptions{
         Rules: append(rules, catchAllBlockerRule()),
         RuleSet: splitTunnelRuleSet(dir),
     }
     configureCIDRResolver(&opts)
-    require.Equal(t, resolver, opts.Route.Rules[0].DefaultOptions.ResolveOptions.Server)
+    require.Equal(t, resolver, opts.Route.Rules[1].DefaultOptions.ResolveOptions.Server)
+    opts.Route.DefaultDomainResolver = &O.DomainResolveOptions{Server:"dns_bypass"}
     instance, err := sbox.New(sbox.Options{Context: ctx, Options: opts})
     require.NoError(t, err)
     require.NoError(t, instance.Start())
@@ -107,6 +112,9 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
     }
     defer transport.CloseIdleConnections()
     client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+    domainResponse, err := client.Get(fmt.Sprintf("http://cidr-domain-bypass.test:%d/", port))
+    require.NoError(t, err, "an excluded domain must bypass CIDR resolution through a DNS server that does not know it")
+    require.NoError(t, domainResponse.Body.Close())
     address := fmt.Sprintf("http://%s:%d/", fake, port)
     reachesTarget := func() bool {
         response, err := client.Get(address)
@@ -165,4 +173,16 @@ func TestCIDRResolvePrecedesTUNSelfGuard(t *testing.T) {
     require.Greater(t, resolveIndex, -1)
     require.Greater(t, guardIndex, resolveIndex)
     require.Greater(t, privateIndex, guardIndex)
+}
+
+func TestCIDRExplicitFiltersPrecedeResolution(t *testing.T) {
+    rules := baseRoutingRules()
+    firstSplit, resolve := -1, -1
+    for i, rule := range rules {
+        if firstSplit == -1 && slices.Contains(rule.DefaultOptions.RuleSet, splitTunnelTag) { firstSplit = i }
+        if rule.DefaultOptions.Action == C.RuleActionTypeResolve { resolve = i }
+    }
+    require.Greater(t, firstSplit, -1)
+    require.Greater(t, resolve, firstSplit)
+    require.Equal(t, C.RuleActionTypeReject, rules[firstSplit-1].DefaultOptions.Action)
 }

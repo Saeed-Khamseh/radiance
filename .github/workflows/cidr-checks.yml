@@ -22,6 +22,6 @@ jobs:
       - name: Format modified Go files
         run: gofmt -w vpn/split_tunnel*.go vpn/boxoptions*.go vpn/bypass_udp_test.go cmd/lantern/split_tunnel.go internal/paths.go
       - name: Check CIDR routing, DNS, persistence and existing split tunneling
-        run: go test -tags with_gvisor,with_quic,with_wireguard,with_utls,with_grpc ./vpn -run 'TestCIDR|TestAddRemove|TestRemoveItems|TestFilterPersistence|TestPolicy|TestEmptyFilter|TestEnableDisable|TestBypassUDP' -count=1 -timeout=15m -v
+        run: go test -tags with_gvisor,with_quic,with_wireguard,with_utls,with_grpc ./vpn -run 'TestCIDR|TestBuildOptions|TestBase|TestRejectIPv6|TestTunHasIPv6|TestAddRemove|TestRemoveItems|TestFilterPersistence|TestPolicy|TestEmptyFilter|TestEnableDisable|TestBypassUDP' -count=1 -timeout=15m -v
       - name: Check CLI compiles
         run: go test -tags with_gvisor,with_quic,with_wireguard,with_utls,with_grpc ./cmd/lantern -run Test -timeout=10m

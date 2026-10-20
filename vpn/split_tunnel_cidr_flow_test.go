@@ -57,7 +57,8 @@ func TestCIDRFakeIPHostnameFlow(t *testing.T) {
                 {"type":"hosts","tag":"dns_remote","predefined":{"cidr-route.test":["127.0.0.1"]}},
                 {"type":"fakeip","tag":"dns_fakeip","inet4_range":"198.18.0.0/15"}
             ],
-            "final":"dns_fakeip"
+            "rules":[{"query_type":["A"],"action":"route","server":"dns_fakeip"}],
+            "final":"dns_remote"
         },
         "inbounds":[{"type":"mixed","tag":"test-in","listen":"127.0.0.1","listen_port":%d}],
         "outbounds":[{"type":"direct","tag":"direct"}]

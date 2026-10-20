@@ -59,3 +59,5 @@ func splitTunnelRoutingRules() []O.Rule { return nil }
 
 
 func cidrResolveRoutingRules() []O.Rule { return nil }
+
+func configureCIDRResolver(_ *O.Options) {}

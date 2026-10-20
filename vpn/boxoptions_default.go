@@ -5,6 +5,7 @@ package vpn
 import (
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -224,3 +225,39 @@ func kernelBelow(v, min string) bool {
 	return vMaj < mMaj || (vMaj == mMaj && vMin < mMin)
 }
 
+
+func configureCIDRResolver(opts *O.Options) {
+    if opts.Route == nil || opts.DNS == nil { return }
+    usable := func(tag string) bool {
+        return tag != "" && slices.ContainsFunc(opts.DNS.Servers, func(server O.DNSServerOptions) bool {
+            return server.Tag == tag && server.Type != C.DNSTypeFakeIP
+        })
+    }
+    selected := "dns_remote"
+    if !usable(selected) && opts.Route.DefaultDomainResolver != nil {
+        selected = opts.Route.DefaultDomainResolver.Server
+    }
+    if !usable(selected) { selected = opts.DNS.Final }
+    if !usable(selected) {
+        selected = ""
+        for _, server := range opts.DNS.Servers {
+            if usable(server.Tag) { selected = server.Tag; break }
+        }
+    }
+    if selected == "" {
+        selected = splitTunnelCIDRResolveTag
+        for slices.ContainsFunc(opts.DNS.Servers, func(server O.DNSServerOptions) bool { return server.Tag == selected }) {
+            selected += "-local"
+        }
+        opts.DNS.Servers = append(opts.DNS.Servers, O.DNSServerOptions{
+            Type: C.DNSTypeLocal, Tag: selected, Options: &O.LocalDNSServerOptions{},
+        })
+    }
+    for i := range opts.Route.Rules {
+        rule := &opts.Route.Rules[i]
+        if rule.Type == C.RuleTypeDefault && rule.DefaultOptions.Action == C.RuleActionTypeResolve &&
+            slices.Contains(rule.DefaultOptions.RuleSet, splitTunnelCIDRResolveTag) {
+            rule.DefaultOptions.ResolveOptions.Server = selected
+        }
+    }
+}

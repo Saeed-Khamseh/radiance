@@ -16,6 +16,7 @@ import (
     "time"
 
     box "github.com/getlantern/lantern-box"
+    C "github.com/sagernet/sing-box/constant"
     "github.com/miekg/dns"
     sbox "github.com/sagernet/sing-box"
     "github.com/sagernet/sing-box/adapter"
@@ -29,6 +30,12 @@ import (
 )
 
 func TestCIDRFakeIPHostnameFlow(t *testing.T) {
+    for _, resolver := range []string{"dns_remote", "custom-real"} {
+        t.Run(resolver, func(t *testing.T) { testCIDRFakeIPHostnameFlow(t, resolver) })
+    }
+}
+
+func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
     target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         fmt.Fprint(w, "CIDR bypass reached")
     }))
@@ -54,21 +61,23 @@ func TestCIDRFakeIPHostnameFlow(t *testing.T) {
         "log": {"disabled": true},
         "dns": {
             "servers": [
-                {"type":"hosts","tag":"dns_remote","predefined":{"cidr-route.test":["127.0.0.1"]}},
+                {"type":"hosts","tag":"%s","predefined":{"cidr-route.test":["127.0.0.1"]}},
                 {"type":"fakeip","tag":"dns_fakeip","inet4_range":"198.18.0.0/15"}
             ],
             "rules":[{"query_type":["A"],"action":"route","server":"dns_fakeip"}],
-            "final":"dns_remote"
+            "final":"%s"
         },
         "inbounds":[{"type":"mixed","tag":"test-in","listen":"127.0.0.1","listen_port":%d}],
         "outbounds":[{"type":"direct","tag":"direct"}]
-    }`, proxyPort)))
+    }`, resolver, resolver, proxyPort)))
     require.NoError(t, err)
     rules := append(cidrResolveRoutingRules(), splitTunnelRoutingRules()...)
     opts.Route = &O.RouteOptions{
         Rules: append(rules, catchAllBlockerRule()),
         RuleSet: splitTunnelRuleSet(dir),
     }
+    configureCIDRResolver(&opts)
+    require.Equal(t, resolver, opts.Route.Rules[0].DefaultOptions.ResolveOptions.Server)
     instance, err := sbox.New(sbox.Options{Context: ctx, Options: opts})
     require.NoError(t, err)
     require.NoError(t, instance.Start())
@@ -113,4 +122,46 @@ func TestCIDRFakeIPHostnameFlow(t *testing.T) {
     require.Eventually(t, reachesTarget, 5*time.Second, 50*time.Millisecond)
     require.NoError(t, st.RemoveItem(TypeIPCIDR, "127.0.0.0/8"))
     require.Eventually(t, func() bool { return !reachesTarget() }, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestCIDRResolverAfterDNSOverride(t *testing.T) {
+    for _, tc := range []struct {
+        name string
+        servers []O.DNSServerOptions
+        final string
+        want string
+    }{
+        {"custom", []O.DNSServerOptions{{Type:C.DNSTypeLocal, Tag:"custom"}}, "custom", "custom"},
+        {"fake-final", []O.DNSServerOptions{{Type:C.DNSTypeFakeIP, Tag:"fake"}, {Type:C.DNSTypeLocal, Tag:"custom"}}, "fake", "custom"},
+        {"fake-only", []O.DNSServerOptions{{Type:C.DNSTypeFakeIP, Tag:"fake"}}, "fake", splitTunnelCIDRResolveTag},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            opts := baseOpts(t.TempDir())
+            override := O.Options{DNS:&O.DNSOptions{RawDNSOptions:O.RawDNSOptions{Servers:tc.servers, Final:tc.final}}}
+            mergeAndCollectTags(&opts, &override, nil)
+            configureCIDRResolver(&opts)
+            found := false
+            for _, rule := range opts.Route.Rules {
+                if rule.DefaultOptions.Action == C.RuleActionTypeResolve {
+                    require.Equal(t, tc.want, rule.DefaultOptions.ResolveOptions.Server)
+                    found = true
+                }
+            }
+            require.True(t, found)
+            require.Equal(t, tc.final, opts.DNS.Final)
+            require.Len(t, opts.DNS.Rules, 1)
+        })
+    }
+}
+
+func TestCIDRResolvePrecedesTUNSelfGuard(t *testing.T) {
+    resolveIndex, guardIndex, privateIndex := -1, -1, -1
+    for i, rule := range baseRoutingRules() {
+        if rule.DefaultOptions.Action == C.RuleActionTypeResolve { resolveIndex = i }
+        if rule.DefaultOptions.Action == C.RuleActionTypeReject && len(rule.DefaultOptions.IPCIDR) > 0 { guardIndex = i }
+        if rule.DefaultOptions.IPIsPrivate { privateIndex = i }
+    }
+    require.Greater(t, resolveIndex, -1)
+    require.Greater(t, guardIndex, resolveIndex)
+    require.Greater(t, privateIndex, guardIndex)
 }

@@ -25,6 +25,27 @@ func (s *SplitTunnel) cidrResolverBytesLocked() ([]byte, error) {
             Type: C.RuleTypeDefault,
             DefaultOptions: O.DefaultHeadlessRule{DomainRegex: []string{".+"}},
         }
+        if !s.activeFilter.Invert {
+            var bypass []O.HeadlessRule
+            for _, candidate := range s.activeFilter.Rules {
+                raw := candidate.DefaultOptions
+                raw.IPCIDR = nil
+                if !isEmptyRule(raw) {
+                    bypass = append(bypass, O.HeadlessRule{Type:C.RuleTypeDefault, DefaultOptions:raw})
+                }
+            }
+            if len(bypass) > 0 {
+                rule = O.HeadlessRule{Type:C.RuleTypeLogical, LogicalOptions:O.LogicalHeadlessRule{
+                    Mode:C.LogicalTypeAnd,
+                    Rules:[]O.HeadlessRule{
+                        rule,
+                        {Type:C.RuleTypeLogical, LogicalOptions:O.LogicalHeadlessRule{
+                            Mode:C.LogicalTypeOr, Invert:true, Rules:bypass,
+                        }},
+                    },
+                }}
+            }
+        }
     }
     return json.Marshal(O.PlainRuleSetCompat{
         Version: 3,

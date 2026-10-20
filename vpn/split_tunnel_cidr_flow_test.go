@@ -11,7 +11,6 @@ import (
     "net/http/httptest"
     "net/netip"
     "strconv"
-    "slices"
     "strings"
     "testing"
     "time"
@@ -74,14 +73,13 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
         "outbounds":[{"type":"direct","tag":"direct"}]
     }`, resolver, resolver, proxyPort)))
     require.NoError(t, err)
-    rules := append(splitTunnelRoutingRules(), cidrResolveRoutingRules()...)
-    rules = append(rules, splitTunnelRoutingRules()...)
+    rules := append(cidrResolveRoutingRules(), splitTunnelRoutingRules()...)
     opts.Route = &O.RouteOptions{
         Rules: append(rules, catchAllBlockerRule()),
         RuleSet: splitTunnelRuleSet(dir),
     }
     configureCIDRResolver(&opts)
-    require.Equal(t, resolver, opts.Route.Rules[1].DefaultOptions.ResolveOptions.Server)
+    require.Equal(t, resolver, opts.Route.Rules[0].DefaultOptions.ResolveOptions.Server)
     opts.Route.DefaultDomainResolver = &O.DomainResolveOptions{Server:"dns_bypass"}
     instance, err := sbox.New(sbox.Options{Context: ctx, Options: opts})
     require.NoError(t, err)
@@ -130,6 +128,16 @@ func testCIDRFakeIPHostnameFlow(t *testing.T, resolver string) {
     require.Eventually(t, reachesTarget, 5*time.Second, 50*time.Millisecond)
     require.NoError(t, st.RemoveItem(TypeIPCIDR, "127.0.0.0/8"))
     require.Eventually(t, func() bool { return !reachesTarget() }, 5*time.Second, 50*time.Millisecond)
+    require.NoError(t, st.RemoveItem(TypeDomain, "cidr-domain-bypass.test"))
+    require.NoError(t, st.AddItem(TypeIPCIDR, "127.0.0.0/8"))
+    require.Eventually(t, reachesTarget, 5*time.Second, 50*time.Millisecond)
+    require.NoError(t, st.SetPolicy(SplitTunnelPolicyInclude))
+    require.Eventually(t, func() bool { return !reachesTarget() }, 5*time.Second, 50*time.Millisecond,
+        "a hostname inside an included CIDR must stay on the tunnel path")
+    require.NoError(t, st.RemoveItem(TypeIPCIDR, "127.0.0.0/8"))
+    require.NoError(t, st.AddItem(TypeIPCIDR, "192.0.2.0/24"))
+    require.Eventually(t, reachesTarget, 5*time.Second, 50*time.Millisecond,
+        "a hostname outside the included CIDR must use direct routing")
 }
 
 func TestCIDRResolverAfterDNSOverride(t *testing.T) {
@@ -173,16 +181,4 @@ func TestCIDRResolvePrecedesTUNSelfGuard(t *testing.T) {
     require.Greater(t, resolveIndex, -1)
     require.Greater(t, guardIndex, resolveIndex)
     require.Greater(t, privateIndex, guardIndex)
-}
-
-func TestCIDRExplicitFiltersPrecedeResolution(t *testing.T) {
-    rules := baseRoutingRules()
-    firstSplit, resolve := -1, -1
-    for i, rule := range rules {
-        if firstSplit == -1 && slices.Contains(rule.DefaultOptions.RuleSet, splitTunnelTag) { firstSplit = i }
-        if rule.DefaultOptions.Action == C.RuleActionTypeResolve { resolve = i }
-    }
-    require.Greater(t, firstSplit, -1)
-    require.Greater(t, resolve, firstSplit)
-    require.Equal(t, C.RuleActionTypeReject, rules[firstSplit-1].DefaultOptions.Action)
 }

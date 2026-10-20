@@ -301,6 +301,7 @@ func baseRoutingRules() []O.Rule {
 	}
 	rules = append(rules, bypassRoutingRules()...)
 	rules = append(rules, tunSelfRoutingRules()...)
+	rules = append(rules, cidrResolveRoutingRules()...)
 	rules = append(rules, O.Rule{
 		Type: C.RuleTypeDefault,
 		DefaultOptions: O.DefaultRule{
@@ -672,3 +673,4 @@ func newDNSServerOptions(typ, tag, server, domainResolver string) O.DNSServerOpt
 		Options: serverOpts,
 	}
 }
+

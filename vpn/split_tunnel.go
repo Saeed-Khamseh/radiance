@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -32,6 +34,7 @@ type SplitTunnel struct {
 	rule         O.LogicalHeadlessRule
 	activeFilter *O.LogicalHeadlessRule
 	ruleFile     string
+	resolverFile string
 	ruleMap      map[string]*O.DefaultHeadlessRule
 	enabled      *atomic.Bool
 	inverted     *atomic.Bool
@@ -48,10 +51,14 @@ type SplitTunnel struct {
 // yielding a working handler plus an error describing the failure.
 func NewSplitTunnelHandler(dataPath string, logger *slog.Logger) (*SplitTunnel, error) {
 	s := newSplitTunnel(dataPath, logger)
+	var loadErr error
 	if err := s.loadRule(); err != nil {
-		return s, fmt.Errorf("loading split tunnel rule file %s: %w", s.ruleFile, err)
+		loadErr = fmt.Errorf("loading split tunnel rule file %s: %w", s.ruleFile, err)
 	}
-	return s, nil
+	s.access.Lock()
+	gateErr := s.saveCIDRResolverLocked()
+	s.access.Unlock()
+	return s, errors.Join(loadErr, gateErr)
 }
 
 func newSplitTunnel(path string, logger *slog.Logger) *SplitTunnel {
@@ -59,6 +66,7 @@ func newSplitTunnel(path string, logger *slog.Logger) *SplitTunnel {
 	s := &SplitTunnel{
 		rule:         rule,
 		ruleFile:     filepath.Join(path, splitTunnelFile),
+		resolverFile: filepath.Join(path, internal.SplitTunnelCIDRResolveFileName),
 		activeFilter: &(rule.Rules[1].LogicalOptions),
 		ruleMap:      make(map[string]*O.DefaultHeadlessRule),
 		enabled:      &atomic.Bool{},
@@ -146,6 +154,7 @@ func (s *SplitTunnel) Filters() SplitTunnelFilter {
 		DomainSuffix:     slices.Clone(s.ruleMap[TypeDomainSuffix].DomainSuffix),
 		DomainKeyword:    slices.Clone(s.ruleMap[TypeDomainKeyword].DomainKeyword),
 		DomainRegex:      slices.Clone(s.ruleMap[TypeDomainRegex].DomainRegex),
+		IPCIDR:           slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR),
 		ProcessName:      slices.Clone(s.ruleMap[TypeProcessName].ProcessName),
 		ProcessPath:      slices.Clone(s.ruleMap[TypeProcessPath].ProcessPath),
 		ProcessPathRegex: slices.Clone(s.ruleMap[TypeProcessPathRegex].ProcessPathRegex),
@@ -157,11 +166,12 @@ func (s *SplitTunnel) Filters() SplitTunnelFilter {
 func (s *SplitTunnel) AddItem(filterType, item string) error {
 	s.access.Lock()
 	defer s.access.Unlock()
+	previousCIDRs := slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR)
 	if err := s.updateFilterLocked(filterType, item, merge); err != nil {
 		return err
 	}
 	s.logger.Debug("added item to filter", "filterType", filterType, "item", item)
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveCIDRsLocked(previousCIDRs); err != nil {
 		return fmt.Errorf("writing rule to %s: %w", s.ruleFile, err)
 	}
 	return nil
@@ -171,11 +181,12 @@ func (s *SplitTunnel) AddItem(filterType, item string) error {
 func (s *SplitTunnel) RemoveItem(filterType, item string) error {
 	s.access.Lock()
 	defer s.access.Unlock()
+	previousCIDRs := slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR)
 	if err := s.updateFilterLocked(filterType, item, remove); err != nil {
 		return err
 	}
 	s.logger.Debug("removed item from filter", "filterType", filterType, "item", item)
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveCIDRsLocked(previousCIDRs); err != nil {
 		return fmt.Errorf("writing rule to %s: %w", s.ruleFile, err)
 	}
 	return nil
@@ -183,20 +194,35 @@ func (s *SplitTunnel) RemoveItem(filterType, item string) error {
 
 // AddItems adds multiple items to the filter.
 func (s *SplitTunnel) AddItems(items SplitTunnelFilter) error {
+	cidrs, err := normalizeCIDRs(items.IPCIDR)
+	if err != nil {
+		return err
+	}
+	items.IPCIDR = cidrs
 	s.access.Lock()
 	defer s.access.Unlock()
+	previousCIDRs := slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR)
+	if len(uniqueCIDRs(append(slices.Clone(previousCIDRs), cidrs...))) > 10000 {
+		return fmt.Errorf("a list can contain at most 10000 CIDRs")
+	}
 	s.updateFiltersLocked(items, merge)
 	s.logger.Debug("added items to filter", "items", items.String())
-	return s.saveLocked()
+	return s.saveCIDRsLocked(previousCIDRs)
 }
 
 // RemoveItems removes multiple items from the filter.
 func (s *SplitTunnel) RemoveItems(items SplitTunnelFilter) error {
+	cidrs, err := normalizeCIDRs(items.IPCIDR)
+	if err != nil {
+		return err
+	}
+	items.IPCIDR = cidrs
 	s.access.Lock()
 	defer s.access.Unlock()
+	previousCIDRs := slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR)
 	s.updateFiltersLocked(items, remove)
 	s.logger.Debug("removed items from filter", "items", items.String())
-	return s.saveLocked()
+	return s.saveCIDRsLocked(previousCIDRs)
 }
 
 type actionFn func(slice []string, items []string) []string
@@ -219,6 +245,16 @@ func (s *SplitTunnel) updateFilterLocked(filterType string, item string, fn acti
 		rule.DomainKeyword = fn(rule.DomainKeyword, items)
 	case TypeDomainRegex:
 		rule.DomainRegex = fn(rule.DomainRegex, items)
+	case TypeIPCIDR:
+		cidrs, err := normalizeCIDRs(items)
+		if err != nil {
+			return err
+		}
+		next := uniqueCIDRs(fn(slices.Clone(rule.IPCIDR), cidrs))
+		if len(next) > 10000 {
+			return fmt.Errorf("a list can contain at most 10000 CIDRs")
+		}
+		rule.IPCIDR = next
 	case TypeProcessName:
 		rule.ProcessName = fn(rule.ProcessName, items)
 	case TypeProcessPath:
@@ -238,6 +274,7 @@ func (s *SplitTunnel) updateFiltersLocked(diff SplitTunnelFilter, fn actionFn) {
 	s.ruleMap[TypeDomainSuffix].DomainSuffix = fn(s.ruleMap[TypeDomainSuffix].DomainSuffix, diff.DomainSuffix)
 	s.ruleMap[TypeDomainKeyword].DomainKeyword = fn(s.ruleMap[TypeDomainKeyword].DomainKeyword, diff.DomainKeyword)
 	s.ruleMap[TypeDomainRegex].DomainRegex = fn(s.ruleMap[TypeDomainRegex].DomainRegex, diff.DomainRegex)
+	s.ruleMap[TypeIPCIDR].IPCIDR = uniqueCIDRs(fn(slices.Clone(s.ruleMap[TypeIPCIDR].IPCIDR), diff.IPCIDR))
 	s.ruleMap[TypeProcessName].ProcessName = fn(s.ruleMap[TypeProcessName].ProcessName, diff.ProcessName)
 	s.ruleMap[TypeProcessPath].ProcessPath = fn(s.ruleMap[TypeProcessPath].ProcessPath, diff.ProcessPath)
 	s.ruleMap[TypeProcessPathRegex].ProcessPathRegex = fn(s.ruleMap[TypeProcessPathRegex].ProcessPathRegex, diff.ProcessPathRegex)
@@ -246,6 +283,41 @@ func (s *SplitTunnel) updateFiltersLocked(diff SplitTunnelFilter, fn actionFn) {
 
 func merge(slice []string, items []string) []string {
 	return append(slice, items...)
+}
+
+func normalizeCIDRs(items []string) ([]string, error) {
+	if len(items) > 10000 {
+		return nil, fmt.Errorf("a list can contain at most 10000 CIDRs")
+	}
+	canonical := make([]string, 0, len(items))
+	for _, item := range items {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(item))
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", item, err)
+		}
+		canonical = append(canonical, prefix.Masked().String())
+	}
+	return uniqueCIDRs(canonical), nil
+}
+
+func uniqueCIDRs(items []string) []string {
+	seen := make(map[string]bool, len(items))
+	unique := make([]string, 0, len(items))
+	for _, item := range items {
+		if !seen[item] {
+			seen[item] = true
+			unique = append(unique, item)
+		}
+	}
+	return unique
+}
+
+func (s *SplitTunnel) saveCIDRsLocked(previous []string) error {
+	if err := s.saveLocked(); err != nil {
+		s.ruleMap[TypeIPCIDR].IPCIDR = previous
+		return err
+	}
+	return nil
 }
 
 // remove removes all items in items from s.
@@ -311,14 +383,12 @@ func (s *SplitTunnel) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("marshalling rule set: %w", err)
 	}
-	if err := atomicfile.WriteFile(s.ruleFile, buf, fileperm.File); err != nil {
-		return fmt.Errorf("writing rule file %s: %w", s.ruleFile, err)
-	}
-	return nil
+	return s.writeRuleFilesLocked(buf)
 }
 
 func isEmptyRule(rule O.DefaultHeadlessRule) bool {
 	return len(rule.Domain) == 0 && len(rule.DomainSuffix) == 0 &&
+		len(rule.IPCIDR) == 0 &&
 		len(rule.DomainKeyword) == 0 && len(rule.DomainRegex) == 0 &&
 		len(rule.ProcessName) == 0 && len(rule.PackageName) == 0 &&
 		len(rule.ProcessPath) == 0 && len(rule.ProcessPathRegex) == 0
@@ -361,6 +431,12 @@ func (s *SplitTunnel) loadRule() error {
 				Mode:  C.LogicalTypeOr,
 				Rules: []O.HeadlessRule{},
 			},
+		}
+		if len(legacyRule.IPCIDR) > 0 {
+			s.rule.Rules[1].LogicalOptions.Rules = append(s.rule.Rules[1].LogicalOptions.Rules, O.HeadlessRule{
+				Type:           C.RuleTypeDefault,
+				DefaultOptions: O.DefaultHeadlessRule{IPCIDR: legacyRule.IPCIDR},
+			})
 		}
 		if len(legacyRule.Domain) > 0 ||
 			len(legacyRule.DomainSuffix) > 0 ||
@@ -471,7 +547,7 @@ func defaultRule() O.LogicalHeadlessRule {
 func (s *SplitTunnel) initRuleMap() {
 	s.ruleMap = make(map[string]*O.DefaultHeadlessRule)
 
-	categories := []string{TypeDomain, TypeProcessName, TypeProcessPath, TypeProcessPathRegex, TypePackageName}
+	categories := []string{TypeDomain, TypeIPCIDR, TypeProcessName, TypeProcessPath, TypeProcessPathRegex, TypePackageName}
 
 	// First pass: find which categories already have rules, and ensure empty
 	// rules exist for the rest. All appends happen before any pointers are
@@ -482,6 +558,9 @@ func (s *SplitTunnel) initRuleMap() {
 		if len(rule.Domain) > 0 || len(rule.DomainSuffix) > 0 ||
 			len(rule.DomainKeyword) > 0 || len(rule.DomainRegex) > 0 {
 			found[TypeDomain] = true
+		}
+		if len(rule.IPCIDR) > 0 {
+			found[TypeIPCIDR] = true
 		}
 		if len(rule.ProcessName) > 0 {
 			found[TypeProcessName] = true
@@ -522,6 +601,10 @@ func (s *SplitTunnel) initRuleMap() {
 			s.ruleMap[TypeDomain] = rule
 			matched = true
 		}
+		if len(rule.IPCIDR) > 0 {
+			s.ruleMap[TypeIPCIDR] = rule
+			matched = true
+		}
 		if len(rule.ProcessName) > 0 {
 			s.ruleMap[TypeProcessName] = rule
 			matched = true
@@ -548,3 +631,4 @@ func (s *SplitTunnel) initRuleMap() {
 	s.ruleMap[TypeDomainRegex] = s.ruleMap[TypeDomain]
 	s.ruleMap[TypeDomainSuffix] = s.ruleMap[TypeDomain]
 }
+

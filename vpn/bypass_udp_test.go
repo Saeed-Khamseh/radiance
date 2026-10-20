@@ -62,7 +62,10 @@ func startBypassBox(t *testing.T) *sbox.Box {
 	opts := O.Options{
 		Log: &O.LogOptions{Disabled: true},
 		DNS: &O.DNSOptions{RawDNSOptions: O.RawDNSOptions{
-			Servers: []O.DNSServerOptions{{Tag: "dns_local", Type: C.DNSTypeLocal, Options: &O.LocalDNSServerOptions{}}},
+			Servers: []O.DNSServerOptions{
+				{Tag: "dns_local", Type: C.DNSTypeLocal, Options: &O.LocalDNSServerOptions{}},
+				{Tag: "dns_remote", Type: C.DNSTypeLocal, Options: &O.LocalDNSServerOptions{}},
+			},
 			Final:   "dns_local",
 		}},
 		Inbounds: []O.Inbound{{
@@ -172,3 +175,4 @@ func TestBypassUDPFollowsProxy(t *testing.T) {
 	defer stopBypassBox(t, instance)
 	exchange(t, pc, true, a, b)
 }
+

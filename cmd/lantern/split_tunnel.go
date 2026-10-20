@@ -20,12 +20,12 @@ type SplitTunnelCmd struct {
 type SplitTunnelListCmd struct{}
 
 type SplitTunnelAddCmd struct {
-	Type  string `arg:"-t,--type,required" help:"filter type: domain, domain-suffix, domain-keyword, domain-regex, process-name, process-path, process-path-regex, package-name"`
+	Type  string `arg:"-t,--type,required" help:"filter type: domain, domain-suffix, domain-keyword, domain-regex, ip-cidr, process-name, process-path, process-path-regex, package-name"`
 	Value string `arg:"-v,--value,required" help:"filter value (e.g. example.com)"`
 }
 
 type SplitTunnelRemoveCmd struct {
-	Type  string `arg:"-t,--type,required" help:"filter type: domain, domain-suffix, domain-keyword, domain-regex, process-name, process-path, process-path-regex, package-name"`
+	Type  string `arg:"-t,--type,required" help:"filter type: domain, domain-suffix, domain-keyword, domain-regex, ip-cidr, process-name, process-path, process-path-regex, package-name"`
 	Value string `arg:"-v,--value,required" help:"filter value (e.g. example.com)"`
 }
 
@@ -72,6 +72,7 @@ func printFilters(f vpn.SplitTunnelFilter) {
 		{"domain-suffix", f.DomainSuffix},
 		{"domain-keyword", f.DomainKeyword},
 		{"domain-regex", f.DomainRegex},
+		{"ip-cidr", f.IPCIDR},
 		{"process-name", f.ProcessName},
 		{"process-path", f.ProcessPath},
 		{"process-path-regex", f.ProcessPathRegex},
@@ -121,6 +122,8 @@ func buildFilter(filterType, value string) vpn.SplitTunnelFilter {
 		f.DomainKeyword = []string{value}
 	case vpn.TypeDomainRegex:
 		f.DomainRegex = []string{value}
+	case vpn.TypeIPCIDR:
+		f.IPCIDR = []string{value}
 	case vpn.TypeProcessName:
 		f.ProcessName = []string{value}
 	case vpn.TypeProcessPath:
@@ -132,3 +135,4 @@ func buildFilter(filterType, value string) vpn.SplitTunnelFilter {
 	}
 	return f
 }
+

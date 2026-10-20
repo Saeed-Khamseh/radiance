@@ -143,7 +143,25 @@ func splitTunnelRuleSet(basePath string) []O.RuleSet {
 			},
 			Format: C.RuleSetFormatSource,
 		},
+		{
+			Type: C.RuleSetTypeLocal,
+			Tag: splitTunnelCIDRResolveTag,
+			LocalOptions: O.LocalRuleSet{Path: newSplitTunnel(basePath, slog.Default()).resolverFile},
+			Format: C.RuleSetFormatSource,
+		},
 	}
+}
+
+func cidrResolveRoutingRules() []O.Rule {
+	return []O.Rule{{
+		Type: C.RuleTypeDefault,
+		DefaultOptions: O.DefaultRule{
+			RawDefaultRule: O.RawDefaultRule{RuleSet: []string{splitTunnelCIDRResolveTag}},
+			RuleAction: O.RuleAction{Action: C.RuleActionTypeResolve,
+				ResolveOptions: O.RouteActionResolve{Server: "dns_remote"},
+			},
+		},
+	}}
 }
 
 func splitTunnelRoutingRules() []O.Rule {
@@ -205,3 +223,4 @@ func kernelBelow(v, min string) bool {
 	}
 	return vMaj < mMaj || (vMaj == mMaj && vMin < mMin)
 }
+

@@ -13,6 +13,7 @@ const (
 	ServersFileName            = "servers.json"
 	ServersInvalidFileName     = "servers.invalid.json"
 	SplitTunnelFileName        = "split-tunnel.json"
+	SplitTunnelCIDRResolveFileName = "split-tunnel-cidr-resolve.json"
 	SplitTunnelInvalidFileName = "split-tunnel.invalid.json"
 	LogFileName                = "lantern.log"
 	CrashLogFileName           = "lantern-crash.log"
@@ -44,3 +45,4 @@ func DefaultLogPath() string {
 		return ""
 	}
 }
+

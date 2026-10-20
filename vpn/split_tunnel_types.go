@@ -39,6 +39,7 @@ const (
 	TypeDomainSuffix     = "domainSuffix"
 	TypeDomainKeyword    = "domainKeyword"
 	TypeDomainRegex      = "domainRegex"
+	TypeIPCIDR           = "ipCidr"
 	TypeProcessName      = "processName"
 	TypeProcessPath      = "processPath"
 	TypeProcessPathRegex = "processPathRegex"
@@ -52,6 +53,7 @@ type SplitTunnelFilter struct {
 	DomainSuffix     []string
 	DomainKeyword    []string
 	DomainRegex      []string
+	IPCIDR           []string
 	ProcessName      []string
 	ProcessPath      []string
 	ProcessPathRegex []string
@@ -72,6 +74,9 @@ func (f SplitTunnelFilter) String() string {
 	if len(f.DomainRegex) > 0 {
 		str = append(str, fmt.Sprintf("domainRegex: %v", f.DomainRegex))
 	}
+	if len(f.IPCIDR) > 0 {
+		str = append(str, fmt.Sprintf("ipCidr: %v", f.IPCIDR))
+	}
 	if len(f.ProcessName) > 0 {
 		str = append(str, fmt.Sprintf("processName: %v", f.ProcessName))
 	}
@@ -86,3 +91,4 @@ func (f SplitTunnelFilter) String() string {
 	}
 	return "{" + strings.Join(str, ", ") + "}"
 }
+

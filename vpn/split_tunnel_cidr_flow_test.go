@@ -133,6 +133,7 @@ func TestCIDRResolverAfterDNSOverride(t *testing.T) {
     }{
         {"custom", []O.DNSServerOptions{{Type:C.DNSTypeLocal, Tag:"custom"}}, "custom", "custom"},
         {"fake-final", []O.DNSServerOptions{{Type:C.DNSTypeFakeIP, Tag:"fake"}, {Type:C.DNSTypeLocal, Tag:"custom"}}, "fake", "custom"},
+        {"hosts-first", []O.DNSServerOptions{{Type:C.DNSTypeHosts, Tag:"hosts"}, {Type:C.DNSTypeLocal, Tag:"custom"}, {Type:C.DNSTypeFakeIP, Tag:"fake"}}, "fake", "custom"},
         {"fake-only", []O.DNSServerOptions{{Type:C.DNSTypeFakeIP, Tag:"fake"}}, "fake", splitTunnelCIDRResolveTag},
     } {
         t.Run(tc.name, func(t *testing.T) {

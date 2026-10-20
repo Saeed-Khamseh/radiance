@@ -241,7 +241,7 @@ func configureCIDRResolver(opts *O.Options) {
     if !usable(selected) {
         selected = ""
         for _, server := range opts.DNS.Servers {
-            if usable(server.Tag) { selected = server.Tag; break }
+            if usable(server.Tag) && server.Type != C.DNSTypeHosts { selected = server.Tag; break }
         }
     }
     if selected == "" {
